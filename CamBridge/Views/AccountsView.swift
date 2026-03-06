@@ -19,6 +19,7 @@ struct AccountsRootView: View {
                 emptyState
             } else {
                 List {
+                    @Bindable var mgr = mgr
                     ForEach($mgr.accounts) { $acc in
                         AccountRow(account: $acc,
                             onEdit:   { editing = acc },

@@ -3,7 +3,7 @@
 // 文档: https://pan.baidu.com/union/document/basic
 
 import Foundation
-import CommonCrypto
+import CryptoKit
 
 enum BaiduError: LocalizedError {
     case noToken, api(Int, String), upload(String)
@@ -144,9 +144,7 @@ final class BaiduPanService {
     }
 
     private func md5(_ data: some DataProtocol) -> String {
-        var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
-        let bytes  = Array(data)
-        CC_MD5(bytes, CC_LONG(bytes.count), &digest)
+        let digest = Insecure.MD5.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 }

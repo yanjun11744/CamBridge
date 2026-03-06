@@ -53,18 +53,20 @@ struct DeviceRow: View {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.accentColor.opacity(0.12))
                     .frame(width: 34, height: 34)
-                Image(systemName: device.isWiFiEnabled ? "camera.on.rectangle.fill" : "camera.fill")
-                    .foregroundStyle(.accent)
+                // 替换后
+                Image(systemName: device.transportType == "WiFi" ? "camera.on.rectangle.fill" : "camera.fill")
+                    .foregroundStyle(Color.accentColor)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(device.name ?? "未知相机")
                     .font(.body.weight(.medium))
                     .lineLimit(1)
                 HStack(spacing: 4) {
+                    // 暂时固定显示绿色，后续补充正确属性
                     Circle()
-                        .fill(device.isConnected ? Color.green : Color.gray)
+                        .fill(Color.green)
                         .frame(width: 6, height: 6)
-                    Text(device.isWiFiEnabled ? "WiFi" : "USB")
+                    Text(device.transportType == "WiFi" ? "WiFi" : "USB")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

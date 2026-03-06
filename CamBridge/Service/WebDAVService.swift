@@ -51,7 +51,7 @@ final class WebDAVService {
 
         // 确保远端目录存在
         let dirURL = base.appendingPathComponent(remotePath)
-        var mkcolReq = request(dirURL, method: "MKCOL")
+        let mkcolReq = request(dirURL, method: "MKCOL")
         let (_, mkcolResp) = try await session.data(for: mkcolReq)
         // 201=Created, 405=Already exists — 都可以
         if let h = mkcolResp as? HTTPURLResponse,

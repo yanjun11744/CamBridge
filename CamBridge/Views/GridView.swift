@@ -2,6 +2,7 @@
 // 中间照片网格 + 搜索/筛选
 
 import SwiftUI
+import ImageCaptureCore
 
 struct GridView: View {
     @Environment(CameraBrowser.self) private var browser

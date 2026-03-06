@@ -1,10 +1,9 @@
 // CameraBrowser.swift
 // MTP/PTP 设备浏览与文件管理
-// 修复了所有 Swift 6 并发 + ImageCaptureCore 新 API 编译错误
 
 import Foundation
 import ImageCaptureCore
-import SwiftUI
+import AppKit
 
 @MainActor
 @Observable
@@ -19,7 +18,8 @@ final class CameraBrowser: NSObject {
     var errorMessage  : String?
 
     // MARK: - Private
-    // 修复1: nonisolated(unsafe) 允许 deinit 访问，同时保持 @MainActor 整体隔离
+    // deinit 是 nonisolated 的，nonisolated(unsafe) 允许其访问此属性
+    // deinit 时对象已无其他引用，天然无并发竞争，unsafe 是安全的
     nonisolated(unsafe) private var browser: ICDeviceBrowser?
 
     // MARK: - Init / Deinit
@@ -30,7 +30,6 @@ final class CameraBrowser: NSObject {
     }
 
     deinit {
-        // deinit 是 nonisolated，用 nonisolated(unsafe) 安全访问
         browser?.stop()
         browser?.delegate = nil
     }
@@ -40,7 +39,7 @@ final class CameraBrowser: NSObject {
     func startBrowsing() {
         browser?.stop()
         let b = ICDeviceBrowser()
-        b.delegate  = self
+        b.delegate = self
         b.browsedDeviceTypeMask = ICDeviceTypeMask.camera
         b.start()
         browser = b
@@ -65,79 +64,46 @@ final class CameraBrowser: NSObject {
 
     // MARK: - File Operations
 
-    func requestThumbnail(for item: CameraItem) {
-        item.file.requestThumbnail()
-    }
-
-    /// 下载到临时目录，返回本地 URL（供上传服务使用）
     func downloadToTemp(_ item: CameraItem) async throws -> URL {
-        guard let device = selectedDevice else {
-            throw CamError.noDevice
-        }
+        guard let device = selectedDevice else { throw CamError.noDevice }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        return try await withCheckedThrowingContinuation { cont in
-            let options: [ICDownloadOption: Any] = [
-                .downloadsDirectoryURL: dir,
-                .saveAsFilename:        item.name,
-                .overwrite:             true
-            ]
-            let helper = DownloadHelper(file: item.file, dir: dir, cont: cont)
-            device.requestDownloadFile(
-                item.file,
-                options: options,
-                downloadDelegate: helper,
-                didDownloadSelector: #selector(DownloadHelper.done(_:error:contextInfo:)),
-                contextInfo: nil
-            )
-        }
+        return try await download(item.file, device: device, to: dir)
     }
 
-    /// 下载到指定目录（本地导入用）
     func downloadFile(_ item: CameraItem, to directory: URL) async throws -> URL {
         guard let device = selectedDevice else { throw CamError.noDevice }
+        return try await download(item.file, device: device, to: directory)
+    }
 
-        return try await withCheckedThrowingContinuation { cont in
+    private func download(_ file: ICCameraFile,
+                          device: ICCameraDevice,
+                          to dir: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { cont in
             let options: [ICDownloadOption: Any] = [
-                .downloadsDirectoryURL: directory,
-                .saveAsFilename:        item.name,
-                .overwrite:             true
+                .downloadsDirectoryURL: dir,
+                .saveAsFilename       : file.name ?? UUID().uuidString,
+                .overwrite            : true
             ]
-            let helper = DownloadHelper(file: item.file, dir: directory, cont: cont)
+            let helper = DownloadHelper(file: file, dir: dir, cont: cont)
             device.requestDownloadFile(
-                item.file,
-                options: options,
-                downloadDelegate: helper,
-                didDownloadSelector: #selector(DownloadHelper.done(_:error:contextInfo:)),
-                contextInfo: nil
+                file,
+                options             : options,
+                downloadDelegate    : helper,
+                didDownloadSelector : #selector(DownloadHelper.done(_:error:contextInfo:)),
+                contextInfo         : nil
             )
         }
     }
 
-    // 修复2: requestDeleteFiles 新签名 — completion 只有 [ICDeleteError: ICCameraItem]，无 Error 参数
     func deleteItems(_ items: [CameraItem]) {
-        let files = items.map(\.file)
-        selectedDevice?.requestDeleteFiles(files) { [weak self] errorDict in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if !errorDict.isEmpty {
-                    self.errorMessage = "部分文件删除失败（\(errorDict.count) 项）"
-                }
-                // 从列表中移除已成功删除的
-                let failedFiles = Set(errorDict.values.map { ObjectIdentifier($0) })
-                self.mediaFiles.removeAll {
-                    !failedFiles.contains(ObjectIdentifier($0.file))
-                }
-            }
-        }
+        selectedDevice?.requestDeleteFiles(items.map(\.file))
     }
 
     // MARK: - Helpers
 
     var selectedItems: [CameraItem] { mediaFiles.filter(\.isSelected) }
-
     func selectAll()   { mediaFiles.forEach { $0.isSelected = true  } }
     func deselectAll() { mediaFiles.forEach { $0.isSelected = false } }
 
@@ -172,12 +138,21 @@ extension CameraBrowser: ICDeviceBrowserDelegate {
 }
 
 // MARK: - ICCameraDeviceDelegate
-// 修复3: 实现 ICDeviceDelegate 必要方法 didRemove(_:)，消除协议不符合报错
+// 方法签名完全来自 Xcode "Add protocol stubs" 自动生成，确保与当前 SDK 一致
 
 extension CameraBrowser: ICCameraDeviceDelegate {
+    
+    // 所有文件枚举完成（相机内容目录加载完毕）
+    nonisolated func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
+        Task { @MainActor in
+            isLoading = false
+        }
+    }
+    
 
-    nonisolated func cameraDevice(_ camera: ICCameraDevice,
-                                  didOpenSessionWithError error: (any Error)?) {
+    // 会话打开回调（新签名：device(_:didOpenSessionWithError:)）
+    nonisolated func device(_ device: ICDevice,
+                            didOpenSessionWithError error: (any Error)?) {
         Task { @MainActor in
             if let e = error {
                 errorMessage = e.localizedDescription
@@ -186,45 +161,92 @@ extension CameraBrowser: ICCameraDeviceDelegate {
         }
     }
 
+    // 会话关闭回调
+    nonisolated func device(_ device: ICDevice,
+                            didCloseSessionWithError error: (any Error)?) {
+        Task { @MainActor in
+            if let e = error {
+                errorMessage = e.localizedDescription
+            }
+        }
+    }
+
+    // 新增文件（首次枚举 + 热插拔新增）
     nonisolated func cameraDevice(_ camera: ICCameraDevice,
                                   didAdd items: [ICCameraItem]) {
         let files = items.compactMap { $0 as? ICCameraFile }
         Task { @MainActor in
             let newItems = files.map { CameraItem($0) }
             mediaFiles.append(contentsOf: newItems)
-            isLoading = false
-            newItems.forEach { $0.file.requestThumbnail() }
+            // 请求缩略图（回调到 didReceiveThumbnail）
+            files.forEach { $0.requestThumbnail() }
         }
     }
 
-    // 修复4: didRemoveItems → didRemove
+    // 移除文件
     nonisolated func cameraDevice(_ camera: ICCameraDevice,
                                   didRemove items: [ICCameraItem]) {
-        let files = Set(items.compactMap { $0 as? ICCameraFile }.map { ObjectIdentifier($0) })
+        let ids = Set(items.compactMap { $0 as? ICCameraFile }.map { ObjectIdentifier($0) })
         Task { @MainActor in
-            mediaFiles.removeAll { files.contains(ObjectIdentifier($0.file)) }
+            mediaFiles.removeAll { ids.contains(ObjectIdentifier($0.file)) }
         }
     }
 
+    // 缩略图就绪（新签名：thumbnail 直接作为参数传入，不需要再读 file.thumbnail）
     nonisolated func cameraDevice(_ camera: ICCameraDevice,
-                                  didReceiveThumbnailFor item: ICCameraItem) {
-        guard let file = item as? ICCameraFile else { return }
+                                  didReceiveThumbnail thumbnail: CGImage?,
+                                  for item: ICCameraItem,
+                                  error: (any Error)?) {
+        guard let file = item as? ICCameraFile,
+              let cgImage = thumbnail else { return }
         Task { @MainActor in
-            if let ci = mediaFiles.first(where: { $0.file === file }) {
-                ci.thumbnail = file.thumbnail
-            }
+            guard let ci = mediaFiles.first(where: { $0.file === file }) else { return }
+            ci.thumbnail = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
+            )
         }
     }
 
+    // 元数据就绪（新签名：metadata 直接作为参数传入）
     nonisolated func cameraDevice(_ camera: ICCameraDevice,
-                                  didReceiveMetadataFor item: ICCameraItem) {}
+                                  didReceiveMetadata metadata: [AnyHashable: Any]?,
+                                  for item: ICCameraItem,
+                                  error: (any Error)?) {
+        // 暂不处理，预留扩展（如读取 EXIF）
+    }
 
+    // 文件重命名
     nonisolated func cameraDevice(_ camera: ICCameraDevice,
-                                  didReceiveDownloadProgressFor file: ICCameraFile,
-                                  downloadedBytes: off_t,
-                                  maxBytes: off_t) {}
+                                  didRenameItems items: [ICCameraItem]) {
+        // mediaFiles 里的 CameraItem 持有 ICCameraFile 引用
+        // ICCameraFile.name 已自动更新，触发视图刷新即可
+        Task { @MainActor in
+            mediaFiles = mediaFiles
+        }
+    }
 
-    // 修复5: didRemoveDevice → didRemove(_:)  (ICDeviceDelegate required)
+    // 设备能力变化（如切换拍摄模式）
+    nonisolated func cameraDeviceDidChangeCapability(_ camera: ICCameraDevice) {}
+
+    // PTP 事件（原始协议事件，暂不处理）
+    nonisolated func cameraDevice(_ camera: ICCameraDevice,
+                                  didReceivePTPEvent eventData: Data) {}
+
+    // 访问限制变化
+    nonisolated func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {
+        Task { @MainActor in
+            errorMessage = "相机已启用访问限制，请检查相机设置。"
+        }
+    }
+
+    nonisolated func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {
+        Task { @MainActor in
+            errorMessage = nil
+        }
+    }
+
+    // ICDeviceDelegate required — 设备断开
     nonisolated func didRemove(_ device: ICDevice) {
         Task { @MainActor in removeDevice(device) }
     }
@@ -234,7 +256,7 @@ extension CameraBrowser: ICCameraDeviceDelegate {
 
 extension CameraBrowser: ICCameraDeviceDownloadDelegate {}
 
-// MARK: - DownloadHelper (ObjC selector bridge)
+// MARK: - DownloadHelper（ObjC selector bridge）
 
 final class DownloadHelper: NSObject, ICCameraDeviceDownloadDelegate {
     let file: ICCameraFile
@@ -247,7 +269,7 @@ final class DownloadHelper: NSObject, ICCameraDeviceDownloadDelegate {
 
     @objc func done(_ f: ICCameraFile, error: Error?, contextInfo: UnsafeRawPointer?) {
         if let e = error { cont.resume(throwing: e) }
-        else { cont.resume(returning: dir.appendingPathComponent(f.name ?? "")) }
+        else { cont.resume(returning: dir.appendingPathComponent(f.name ?? "file")) }
     }
 }
 

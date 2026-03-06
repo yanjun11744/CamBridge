@@ -197,7 +197,7 @@ struct AccountPickRow: View {
             }
             Spacer()
             if selected {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.accent)
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
             } else {
                 Circle().stroke(.tertiary, lineWidth: 1.5).frame(width: 20, height: 20)
             }
@@ -322,7 +322,7 @@ struct UploadStatusBar: View {
                     .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     .frame(width: 30, height: 30).rotationEffect(.degrees(-90))
                     .animation(.linear(duration: 0.3), value: p.overallPercent)
-                Image(systemName: "arrow.up").font(.system(size: 9, weight: .bold)).foregroundStyle(.accent)
+                Image(systemName: "arrow.up").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.accentColor)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text("上传中 · \(p.filesSent)/\(p.filesTotal)").font(.callout.weight(.medium))
